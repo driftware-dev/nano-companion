@@ -5,7 +5,10 @@ sans connaissances techniques. Elle se branche sur le Nano en USB directement de
 **Chrome** (Web Serial), sans rien installer, et traduit en langage clair ce qu'il fait.
 
 👉 **En ligne : https://driftware-dev.github.io/nano-companion/**
-(ouvrir dans Chrome ou Edge sur ordinateur, puis brancher le Nano en USB-C)
+
+- **Sur ordinateur** : Chrome ou Edge, Nano branché en USB-C (via Web Serial).
+- **Sur smartphone Android** : Chrome, Nano branché en USB-C, autoriser l'accès USB
+  (via WebUSB). *iPhone/iPad : impossible, iOS n'ouvre pas l'USB aux navigateurs.*
 
 ## Fonctions
 
@@ -15,6 +18,7 @@ sans connaissances techniques. Elle se branche sur le Nano en USB directement de
 - **Bluetooth** — scan avec reconnaissance des marques et des objets (AirTag, AirPods…) ;
   explorateur GATT ; faux appareil (iBeacon / Eddystone) ; clavier HID automatique (BadBLE).
 - **Infrarouge** — capture et rejeu de télécommandes, TV-B-Gone (avec arrêt matériel).
+- **Shiver** — état du réseau maillé que les Nano forment entre eux (voisins, nœuds en ligne).
 - **Fichiers** — lecture de la mémoire du Nano.
 - **Journal** — tout l'échange USB, pour apprendre.
 
