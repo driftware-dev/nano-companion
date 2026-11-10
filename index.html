@@ -98,7 +98,17 @@ details.gatt { background: var(--panel2); border-radius: 8px; padding: 8px 12px;
 details.gatt summary { cursor: pointer; font-weight: 600; }
 .char { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
 .char .props { color: var(--muted); font-size: 12px; }
-@media (max-width: 600px) { .item { grid-template-columns: 28px 1fr; } .item > :last-child { grid-column: 2; } }
+@media (max-width: 600px) {
+  header { padding: 10px 14px; gap: 8px; }
+  header h1 { font-size: 16px; flex-basis: 100%; }
+  header h1 span { display: none; }
+  nav { padding: 8px 12px 0; position: sticky; top: 58px; background: var(--bg); z-index: 1; }
+  main { padding: 14px 14px 60px; }
+  .card { padding: 14px; }
+  button { padding: 10px 14px; } /* cibles tactiles plus grandes */
+  .item { grid-template-columns: 28px 1fr; } .item > :last-child { grid-column: 2; }
+  .inline label.field { min-width: 100%; }
+}
 </style>
 </head>
 <body>
@@ -112,8 +122,9 @@ details.gatt summary { cursor: pointer; font-weight: 600; }
 <div id="gate">
   <div class="big">🔌</div>
   <h2>Branche ton Nano en USB-C puis clique sur « Connecter le Nano »</h2>
-  <p class="hint">Chrome va te demander de choisir le port : sélectionne celui qui s'appelle « USB JTAG/serial debug unit ». Rien n'est envoyé sur Internet, tout reste entre ton navigateur et le Nano.</p>
-  <p id="unsupported" class="summary" hidden>Ce navigateur ne sait pas parler au port USB. Ouvre cette page dans <b>Chrome</b> ou <b>Edge</b> sur ordinateur.</p>
+  <p class="hint">Chrome va te demander de choisir l'appareil : sélectionne « USB JTAG/serial debug unit ». Rien n'est envoyé sur Internet, tout reste entre ton navigateur et le Nano.</p>
+  <p class="hint">📱 <b>Sur smartphone Android</b> : branche le Nano avec un câble USB-C, ouvre cette page dans <b>Chrome</b> et autorise l'accès USB. (Sur iPhone, ce n'est hélas pas possible : iOS ne donne pas accès à l'USB aux navigateurs.)</p>
+  <p id="unsupported" class="summary" hidden>Ce navigateur ne sait pas parler à l'USB. Ouvre cette page dans <b>Chrome</b> ou <b>Edge</b> (ordinateur ou Android). Sur iPhone/iPad, ce n'est pas possible.</p>
 </div>
 
 <div id="app" hidden>
@@ -122,6 +133,7 @@ details.gatt summary { cursor: pointer; font-weight: 600; }
     <button role="tab" data-tab="wifi">Wi-Fi</button>
     <button role="tab" data-tab="ble">Bluetooth</button>
     <button role="tab" data-tab="ir">Infrarouge</button>
+    <button role="tab" data-tab="shiver">Shiver</button>
     <button role="tab" data-tab="files">Fichiers</button>
     <button role="tab" data-tab="log">Journal</button>
   </nav>
@@ -246,7 +258,7 @@ details.gatt summary { cursor: pointer; font-weight: 600; }
       </div>
 
       <div class="card danger-card">
-        <h2>Clavier Bluetooth automatique (BadBLE)</h2>
+        <h2>Clavier Bluetooth automatique (BadBT / BadBLE)</h2>
         <p class="hint">Le Nano se fait passer pour un clavier Bluetooth. Une fois appairé à un appareil (ordinateur, téléphone), il peut taper du texte tout seul, comme un Rubber Ducky sans fil. Classique des CTF.</p>
         <ol class="hint" style="margin:0 0 10px 18px">
           <li>Démarre le clavier, puis appaire le Nano depuis l'appareil cible (Réglages Bluetooth → « Nano KB »).</li>
@@ -291,6 +303,16 @@ details.gatt summary { cursor: pointer; font-weight: 600; }
       </div>
     </section>
 
+    <section data-panel="shiver" hidden>
+      <div class="card">
+        <h2>Shiver — le réseau maillé des Nano</h2>
+        <p class="hint">Shiver est le réseau sans fil que les BLEShark Nano forment entre eux : ils se relaient sans box ni Internet. Ici tu vois l'état du maillage vu par ton Nano.</p>
+        <div class="row"><button id="shiverGo" class="primary">Rafraîchir</button></div>
+        <div class="summary" id="shiverSum"></div>
+        <div class="tiles" id="shiverTiles"></div>
+      </div>
+    </section>
+
     <section data-panel="files" hidden>
       <div class="card">
         <h2>Fichiers du Nano</h2>
@@ -315,7 +337,7 @@ details.gatt summary { cursor: pointer; font-weight: 600; }
 
 <script type="module">
 import { Nano, EVT, describeBle, distanceHint, SECURITY, irCapture,
-         advSpec, keyboardSpec, buildPcap } from "./nano.js";
+         advSpec, keyboardSpec, buildPcap, requestLink, canConnect } from "./nano.js";
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -332,6 +354,7 @@ function showTab(name) {
   document.querySelectorAll("[role=tab]").forEach((b) => b.setAttribute("aria-selected", b.dataset.tab === name));
   document.querySelectorAll("[data-panel]").forEach((p) => (p.hidden = p.dataset.panel !== name));
   if (name === "files" && nano) loadFiles();
+  if (name === "shiver" && nano) loadShiver();
 }
 document.querySelectorAll("[role=tab]").forEach((b) => b.onclick = () => showTab(b.dataset.tab));
 document.querySelectorAll("[data-go]").forEach((b) => b.onclick = () => showTab(b.dataset.go));
@@ -373,19 +396,21 @@ async function guard(fn) {
 }
 
 // ---------- Connexion ----------
-if (!("serial" in navigator)) { $("#unsupported").hidden = false; $("#connect").disabled = true; }
+const onAndroid = /Android/i.test(navigator.userAgent);
+if (!canConnect()) { $("#unsupported").hidden = false; $("#connect").disabled = true; }
 
 $("#connect").onclick = () => guard(async () => {
   if (nano) return disconnect();
-  const port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] }).catch(() => null);
-  if (!port) return;
+  let link;
+  try { link = await requestLink(); } catch (e) { return e.name === "NotFoundError" ? null : toast(e.message, true); }
+  if (!link) return;
   nano = new Nano({
     onEvent: (id, json, text, raw) => listeners.forEach((l) => l(id, json, text, raw)),
     onLog: (t) => log("dbg", t),
     onTraffic: (dir, what, body) => log(dir === "→" ? "out" : "in", `${dir} ${what}${body ? " " + body.slice(0, 300) : ""}\n`),
     onClose: () => { if (nano) { toast("Le Nano a été débranché.", true); cleanup(); } },
   });
-  await nano.connect(port);
+  await nano.connect(link);
   let info;
   try { info = await nano.info(); }
   catch { await nano.disconnect(); nano = null; throw new Error("Ce port ne répond pas comme un BLEShark Nano (firmware 1.1.0 ou plus requis)."); }
@@ -608,6 +633,29 @@ async function loadFiles() {
 }
 $("#filesGo").onclick = loadFiles;
 
+// ---------- Shiver (mesh) ----------
+const SHIVER_STATE = { 0: "éteint", 1: "démarrage", 2: "connexion…", 3: "actif" };
+$("#shiverGo").onclick = () => loadShiver();
+async function loadShiver() {
+  if (busy) return;
+  await guard(async () => {
+    const m = await nano.mesh();
+    if (!m.enabled) {
+      $("#shiverSum").innerHTML = "Le réseau Shiver est <b>désactivé</b> sur ce Nano. Active-le depuis le menu de l'appareil pour qu'il rejoigne le maillage.";
+      $("#shiverTiles").innerHTML = ""; return;
+    }
+    const neigh = m.neighbors ?? 0, online = m.online ?? 0;
+    $("#shiverSum").innerHTML = m.paused
+      ? "⏸ Shiver est actif mais <b>suspendu</b> pendant que l'app est connectée en USB (ça stabilise la liaison). Ça reprend au débranchement."
+      : `Ton Nano est <b>dans le maillage</b>. ${neigh} voisin${neigh > 1 ? "s" : ""} direct${neigh > 1 ? "s" : ""}, ${online} Nano en ligne au total.`;
+    $("#shiverTiles").innerHTML = `
+      <div class="tile"><small>État</small><b style="font-size:17px">${esc(SHIVER_STATE[m.state] || "n°" + m.state)}</b></div>
+      <div class="tile"><small>Voisins directs</small><b>${neigh}</b><small>Nano à portée radio</small></div>
+      <div class="tile"><small>En ligne (tout le maillage)</small><b>${online}</b></div>
+      <div class="tile"><small>Nom du maillage</small><b style="font-size:17px">${esc(m.name || "—")}</b></div>`;
+  });
+}
+
 // ---------- Cases « j'ai l'autorisation » ----------
 const gate = (ackId, btnId) => { const a = $(ackId), b = $(btnId); if (a && b) a.onchange = () => (b.disabled = !a.checked); };
 gate("#deauthAck", "#deauthGo"); gate("#portalAck", "#portalGo"); gate("#advAck", "#advGo"); gate("#hidAck", "#hidStart");
@@ -782,6 +830,7 @@ function endTvbgone() {
 }
 
 navigator.serial?.addEventListener("disconnect", (e) => { if (nano && e.target === nano.port) { toast("Le Nano a été débranché.", true); cleanup(); } });
+navigator.usb?.addEventListener("disconnect", (e) => { if (nano && nano.link?.device && e.device === nano.link.device) { toast("Le Nano a été débranché.", true); cleanup(); } });
 </script>
 </body>
 </html>

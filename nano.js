@@ -144,19 +144,28 @@ export class Nano {
     this.demux = new Demuxer();
   }
 
-  async connect(port) {
-    this.port = port;
-    await port.open({ baudRate: 921600 });
-    this.writer = port.writable.getWriter();
-    this.reader = port.readable.getReader();
-    this.readLoop();
+  // `link` : un SerialLink (Web Serial, PC) ou un UsbLink (WebUSB, Android).
+  async connect(link) {
+    this.link = link;
+    this.port = link.serialPort || null; // pour l'évènement serial "disconnect"
+    await link.open();
+    link.onData = (value) => {
+      const { frames, logs } = this.demux.feed(value);
+      for (const l of logs) this.onLog(dec.decode(l));
+      for (const f of frames) this.dispatch(f);
+    };
+    link.onError = (e) => { if (!this.closing) this.onLog(`\n[lecture interrompue : ${e.message}]\n`); };
+    link.onClose = () => {
+      for (const p of this.pending.values()) p.reject(new Error("Nano déconnecté"));
+      this.pending.clear();
+      this.onClose();
+    };
+    link.start();
   }
 
   async disconnect() {
     this.closing = true;
-    try { await this.reader?.cancel(); } catch {}
-    try { this.writer?.releaseLock(); } catch {}
-    try { await this.port?.close(); } catch {}
+    await this.link?.close().catch(() => {});
   }
 
   // Redémarrage matériel : pulse la ligne RESET via le signal RTS. Géré par le
@@ -164,29 +173,10 @@ export class Nano {
   // (seul moyen fiable d'interrompre une rafale bloquante comme TV-B-Gone).
   // Le Nano reboote et la connexion tombe ; l'utilisateur doit reconnecter.
   async reboot() {
-    if (!this.port) throw new Error("Nano non connecté");
-    await this.port.setSignals({ dataTerminalReady: false, requestToSend: true });  // RESET maintenu
+    if (!this.link) throw new Error("Nano non connecté");
+    await this.link.setSignals({ dataTerminalReady: false, requestToSend: true });  // RESET maintenu
     await new Promise((r) => setTimeout(r, 120));
-    await this.port.setSignals({ dataTerminalReady: false, requestToSend: false }); // relâché -> redémarre
-  }
-
-  async readLoop() {
-    try {
-      for (;;) {
-        const { value, done } = await this.reader.read();
-        if (done) break;
-        const { frames, logs } = this.demux.feed(value);
-        for (const l of logs) this.onLog(dec.decode(l));
-        for (const f of frames) this.dispatch(f);
-      }
-    } catch (e) {
-      if (!this.closing) this.onLog(`\n[lecture interrompue : ${e.message}]\n`);
-    } finally {
-      try { this.reader.releaseLock(); } catch {}
-      for (const p of this.pending.values()) p.reject(new Error("Nano déconnecté"));
-      this.pending.clear();
-      this.onClose();
-    }
+    await this.link.setSignals({ dataTerminalReady: false, requestToSend: false }); // relâché -> redémarre
   }
 
   dispatch(f) {
@@ -227,7 +217,7 @@ export class Nano {
       });
     });
     this.onTraffic("→", `commande 0x${opcode.toString(16).padStart(4, "0")}`, dec.decode(args.filter((b) => b >= 0x20)));
-    await this.writer.write(encodeCommand(seq, opcode, args));
+    await this.link.write(encodeCommand(seq, opcode, args));
     return promise;
   }
 
@@ -330,6 +320,103 @@ function concat(parts) {
   for (const p of parts) { out.set(p, o); o += p.length; }
   return out;
 }
+
+// ---------- Voies de connexion ----------
+// Chaque "link" expose : open(), start(), write(bytes), setSignals(sig), close().
+// Nano y branche onData / onError / onClose.
+
+// PC : Web Serial (navigator.serial). Non disponible sur Android.
+export class SerialLink {
+  constructor(port) { this.port = port; this.serialPort = port; }
+  async open() {
+    await this.port.open({ baudRate: 921600 });
+    this.writer = this.port.writable.getWriter();
+    this.reader = this.port.readable.getReader();
+  }
+  async start() {
+    try {
+      for (;;) {
+        const { value, done } = await this.reader.read();
+        if (done) break;
+        if (value && value.length) this.onData?.(value);
+      }
+    } catch (e) { if (!this.closing) this.onError?.(e); }
+    finally { try { this.reader.releaseLock(); } catch {} this.onClose?.(); }
+  }
+  write(bytes) { return this.writer.write(bytes); }
+  setSignals(sig) { return this.port.setSignals(sig); }
+  async close() {
+    this.closing = true;
+    try { await this.reader?.cancel(); } catch {}
+    try { this.writer?.releaseLock(); } catch {}
+    try { await this.port?.close(); } catch {}
+  }
+}
+
+// Android (ou PC sans Web Serial) : WebUSB. Parle à l'interface CDC Data du Nano
+// (ESP32-C3 USB-Serial-JTAG) : interface 1, EP 0x01 OUT / 0x81 IN, contrôle sur
+// l'interface 0 (DTR/RTS via SET_CONTROL_LINE_STATE).
+export class UsbLink {
+  constructor(device) {
+    this.device = device; this.serialPort = null;
+    this.ifCtrl = 0; this.ifData = 1; this.epOut = 1; this.epIn = 1;
+  }
+  async open() {
+    const d = this.device;
+    await d.open();
+    if (d.configuration === null) await d.selectConfiguration(1);
+    // Repère l'interface CDC Data (classe 10) et ses endpoints, au cas où la
+    // numérotation diffère.
+    for (const itf of d.configuration.interfaces) {
+      const a = itf.alternate;
+      if (a.interfaceClass === 10) {
+        this.ifData = itf.interfaceNumber;
+        for (const ep of a.endpoints) {
+          if (ep.direction === "out") this.epOut = ep.endpointNumber;
+          if (ep.direction === "in") this.epIn = ep.endpointNumber;
+        }
+      }
+      if (a.interfaceClass === 2) this.ifCtrl = itf.interfaceNumber;
+    }
+    try { await d.claimInterface(this.ifCtrl); } catch {}
+    await d.claimInterface(this.ifData);
+    await this.lineState(true, true); // DTR+RTS : le Nano commence à émettre
+  }
+  lineState(dtr, rts) {
+    return this.device.controlTransferOut({
+      requestType: "class", recipient: "interface",
+      request: 0x22, value: (dtr ? 1 : 0) | (rts ? 2 : 0), index: this.ifCtrl,
+    }).catch(() => {});
+  }
+  async start() {
+    this.running = true;
+    try {
+      while (this.running) {
+        const r = await this.device.transferIn(this.epIn, 64);
+        if (r.status === "stall") { await this.device.clearHalt("in", this.epIn); continue; }
+        if (r.data && r.data.byteLength) this.onData?.(new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength));
+      }
+    } catch (e) { if (this.running) this.onError?.(e); }
+    finally { this.onClose?.(); }
+  }
+  async write(bytes) { await this.device.transferOut(this.epOut, bytes); }
+  setSignals({ dataTerminalReady = false, requestToSend = false } = {}) { return this.lineState(dataTerminalReady, requestToSend); }
+  async close() { this.running = false; try { await this.device.close(); } catch {} }
+}
+
+// Ouvre la bonne voie selon le navigateur : Web Serial (PC) sinon WebUSB (Android).
+export async function requestLink() {
+  if (navigator.serial) {
+    const port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] });
+    return new SerialLink(port);
+  }
+  if (navigator.usb) {
+    const dev = await navigator.usb.requestDevice({ filters: [{ vendorId: 0x303a }] });
+    return new UsbLink(dev);
+  }
+  throw new Error("Ni Web Serial ni WebUSB ne sont disponibles dans ce navigateur.");
+}
+export const canConnect = () => !!(navigator.serial || navigator.usb);
 
 // ---------- Constructeurs de trames (repris du SDK) ----------
 
