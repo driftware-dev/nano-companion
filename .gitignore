@@ -1,0 +1,4 @@
+# Rien de perso ni de build : projet statique
+.DS_Store
+*.pcap
+node_modules/
