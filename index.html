@@ -306,10 +306,16 @@ details.gatt summary { cursor: pointer; font-weight: 600; }
     <section data-panel="shiver" hidden>
       <div class="card">
         <h2>Shiver — le réseau maillé des Nano</h2>
-        <p class="hint">Shiver est le réseau sans fil que les BLEShark Nano forment entre eux : ils se relaient sans box ni Internet. Ici tu vois l'état du maillage vu par ton Nano.</p>
+        <p class="hint">Shiver est le réseau sans fil que les BLEShark Nano forment entre eux : ils se relaient sans box ni Internet. Ici tu vois l'état du maillage et les Nano qui en font partie, vus par ton Nano.</p>
         <div class="row"><button id="shiverGo" class="primary">Rafraîchir</button></div>
         <div class="summary" id="shiverSum"></div>
         <div class="tiles" id="shiverTiles"></div>
+        <h2 style="margin-top:18px;font-size:15px">Nano dans le maillage</h2>
+        <div class="list" id="shiverNodes"></div>
+      </div>
+
+      <div class="warn-box" style="border-color:var(--line);background:var(--panel2)">
+        <b>À propos de l'appairage.</b> On ne peut pas appairer un Nano au Shiver depuis cette page : le firmware ne propose aucune commande d'appairage par USB. Chaque Nano rejoint le maillage <b>tout seul</b> dès que tu actives Shiver dans son propre menu (sur son écran). Une fois activé, il apparaît automatiquement dans la liste ci-dessus sur les autres Nano. Cette page sert à <b>voir</b> le maillage, pas à le configurer.
       </div>
     </section>
 
@@ -642,7 +648,7 @@ async function loadShiver() {
     const m = await nano.mesh();
     if (!m.enabled) {
       $("#shiverSum").innerHTML = "Le réseau Shiver est <b>désactivé</b> sur ce Nano. Active-le depuis le menu de l'appareil pour qu'il rejoigne le maillage.";
-      $("#shiverTiles").innerHTML = ""; return;
+      $("#shiverTiles").innerHTML = ""; $("#shiverNodes").innerHTML = ""; return;
     }
     const neigh = m.neighbors ?? 0, online = m.online ?? 0;
     $("#shiverSum").innerHTML = m.paused
@@ -653,6 +659,12 @@ async function loadShiver() {
       <div class="tile"><small>Voisins directs</small><b>${neigh}</b><small>Nano à portée radio</small></div>
       <div class="tile"><small>En ligne (tout le maillage)</small><b>${online}</b></div>
       <div class="tile"><small>Nom du maillage</small><b style="font-size:17px">${esc(m.name || "—")}</b></div>`;
+    const nodes = await nano.meshNodes();
+    $("#shiverNodes").innerHTML = nodes.length
+      ? nodes.map((n, i) => `<div class="item"><span style="font-size:20px">🦈</span>
+          <div><div class="title">${esc(n.name || "Nano sans nom")}</div><div class="sub">identifiant matériel : <code class="mono">${esc(n.efuse || n.mac || "?")}</code></div></div>
+          <span class="tag ok">en ligne</span></div>`).join("")
+      : `<div class="empty">Aucun autre Nano détecté dans le maillage pour l'instant.</div>`;
   });
 }
 

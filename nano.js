@@ -26,7 +26,7 @@ export const CMD = {
   BLE_GATT_CONNECT: 0x0220, BLE_GATT_ENUM: 0x0221, BLE_GATT_READ: 0x0222,
   BLE_GATT_WRITE: 0x0223, BLE_GATT_SUBSCRIBE: 0x0224, BLE_GATT_UNSUBSCRIBE: 0x0225,
   IR_RX: 0x0300, IR_TX: 0x0310, IR_TVBGONE: 0x0311, IR_RAW_TX: 0x0320,
-  MESH_STATUS: 0x0400,
+  MESH_STATUS: 0x0400, MESH_NODES: 0x0401,
   FILES_LIST: 0x0500, FILES_READ_CHUNK: 0x0501,
   STOP: 0x7f00,
 };
@@ -240,6 +240,11 @@ export class Nano {
   info() { return this.call(CMD.DEVICE_INFO); }
   status() { return this.call(CMD.SYSTEM_STATUS); }
   mesh() { return this.call(CMD.MESH_STATUS); }
+  // Liste des Nano du maillage. Absent sur certains firmwares -> renvoie [].
+  async meshNodes() {
+    try { const r = await this.call(CMD.MESH_NODES); return r.nodes || []; }
+    catch (e) { if (e.code === 4) return []; throw e; } // 4 = commande inconnue
+  }
   stop() { return this.call(CMD.STOP, localArgs()); }
   wifiScan() { return this.call(CMD.WIFI_SCAN, localArgs()); }
   bleScan(durationMs) { return this.call(CMD.BLE_SCAN, localArgs({ duration_ms: durationMs, active: true })); }
